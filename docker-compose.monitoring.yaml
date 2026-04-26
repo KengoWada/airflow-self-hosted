@@ -1,0 +1,120 @@
+services:
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.28.0
+    container_name: airflow-statsd-exporter
+    cpus: 0.25
+    mem_limit: 256m
+    mem_reservation: 128m
+    command:
+      - "--statsd.listen-udp=:8125"
+      - "--web.listen-address=:9102"
+    expose:
+      - "8125/udp"
+      - 9102
+    restart: always
+    networks:
+      - airflow-network
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: airflow-prometheus
+    cpus: 0.50
+    mem_limit: 1g
+    mem_reservation: 512m
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - 9090
+    depends_on:
+      - statsd-exporter
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: always
+    networks:
+      - airflow-network
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: airflow-loki
+    cpus: 0.50
+    mem_limit: 1g
+    mem_reservation: 512m
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    expose:
+      - 3100
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3100/ready" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: always
+    networks:
+      - airflow-network
+
+  alloy:
+    image: grafana/alloy:v1.7.2
+    container_name: airflow-alloy
+    cpus: 0.25
+    mem_limit: 512m
+    mem_reservation: 256m
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+    restart: always
+    networks:
+      - airflow-network
+
+  grafana:
+    image: grafana/grafana:11.1.5
+    container_name: airflow-grafana
+    cpus: 0.50
+    mem_limit: 768m
+    mem_reservation: 384m
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: always
+    networks:
+      - airflow-network
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:
+  alloy-data:
+
+networks:
+  airflow-network:
+    external: true

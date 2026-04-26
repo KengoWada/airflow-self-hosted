@@ -1,0 +1,168 @@
+---
+x-airflow-common:
+
+  &airflow-common
+  build: ./docker
+  env_file:
+    - ./env/.airflow.env
+  user: "0:0"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./plugins:/opt/airflow/plugins
+  networks:
+    - airflow-network
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    container_name: airflow-init
+    cpus: 0.50
+    mem_limit: 512m
+    mem_reservation: 256m
+    command:
+      - -c
+      - |
+        airflow db check || airflow db init && \
+        airflow db migrate && \
+        airflow users create \
+          --username "$${_AIRFLOW_WWW_USER_USERNAME}" \
+          --password "$${_AIRFLOW_WWW_USER_PASSWORD}" \
+          --firstname "Airflow" \
+          --lastname "Admin" \
+          --role "Admin" \
+          --email "admin@email.com"
+    environment:
+      _AIRFLOW_WWW_USER_USERNAME: airflow
+      _AIRFLOW_WWW_USER_PASSWORD: airflow
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: airflow api-server --port 8080
+    container_name: airflow-apiserver
+    env_file:
+      - ./env/.airflow.env
+      - ./env/.airflow.jwt.env
+    cpus: 0.75
+    mem_limit: 768m
+    mem_reservation: 384m
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: airflow scheduler
+    container_name: airflow-scheduler
+    env_file:
+      - ./env/.airflow.env
+      - ./env/.airflow.jwt.env
+    cpus: 1.50
+    mem_limit: 2g
+    mem_reservation: 1g
+    healthcheck:
+      test: [ "CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: airflow dag-processor
+    container_name: airflow-dag-processor
+    cpus: 1.0
+    mem_limit: 1g
+    mem_reservation: 512m
+    healthcheck:
+      test: [ "CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --local" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: airflow triggerer
+    container_name: airflow-triggerer
+    cpus: 0.50
+    mem_limit: 512m
+    mem_reservation: 256m
+    healthcheck:
+      test: [ "CMD-SHELL", "airflow jobs check --job-type TriggererJob --local" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: airflow celery worker --queues default
+    container_name: airflow-worker
+    cpus: 2.0
+    mem_limit: 3g
+    mem_reservation: 1g
+    healthcheck:
+      # yamllint disable rule:line-length
+      test: [ "CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"' ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      DUMB_INIT_SETSID: "0"
+    restart: always
+    depends_on:
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  flower:
+    <<: *airflow-common
+    command: airflow celery flower
+    container_name: airflow-flower
+    cpus: 0.50
+    mem_limit: 512m
+    mem_reservation: 256m
+    profiles:
+      - flower
+    ports:
+      - "5555:5555"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:5555/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+networks:
+  airflow-network:
+    external: true

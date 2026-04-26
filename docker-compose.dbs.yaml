@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    cpus: 1.0
+    mem_limit: 1g
+    mem_reservation: 512m
+    expose:
+      - 5432
+    env_file:
+      - ./env/.postgres.env
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - airflow-network
+
+  redis:
+    image: redis:7.2-bookworm
+    container_name: redis
+    cpus: 0.50
+    mem_limit: 512m
+    mem_reservation: 256m
+    expose:
+      - 6379
+    volumes:
+      - redis-data-volume:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
+    networks:
+      - airflow-network
+
+  garage:
+    image: dxflrs/garage:v2.1.0
+    container_name: garage
+    restart: unless-stopped
+    command: /garage server
+    expose:
+      - 3900 # S3 API
+      - 3901 # RPC
+      - 3903 # Admin API
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    environment:
+      - RUST_LOG=garage=info
+    env_file:
+      - ./env/.garage.env
+    healthcheck:
+      test: [ "CMD", "/garage", "status" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - airflow-network
+
+  garage-webui:
+    image: khairul169/garage-webui:latest
+    container_name: garage-webui
+    restart: unless-stopped
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+    ports:
+      - 3909:3909
+    env_file:
+      - ./env/.garage.env
+      - ./env/.garage.webui.env
+    environment:
+      API_BASE_URL: "http://garage:3903"
+      S3_ENDPOINT_URL: "http://garage:3900"
+    networks:
+      - airflow-network
+
+volumes:
+  garage_data:
+  garage_meta:
+  postgres-db-volume:
+  redis-data-volume:
+
+networks:
+  airflow-network:
+    external: true
